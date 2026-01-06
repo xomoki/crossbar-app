@@ -7,7 +7,7 @@ import { MagicToggle } from "@/app/components/ui/MagicToggle";
 import { UserCard } from "@/app/components/ui/UserCard";
 import { ChatOverlay } from "@/app/components/ui/ChatOverlay";
 import { cn } from "@/app/lib/utils";
-import { Search, Map as MapIcon, Settings, MessageCircle, Clock } from "lucide-react";
+import { Search, Map as MapIcon, Settings, MessageCircle, Clock, X } from "lucide-react";
 import Link from "next/link";
 
 // Google Map のスタイル定義 (ダークモード)
