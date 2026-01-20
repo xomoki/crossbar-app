@@ -1,16 +1,19 @@
 "use client";
 
-import { useState, useCallback } from "react";
-import { GoogleMap, useJsApiLoader, Marker, InfoWindow } from "@react-google-maps/api";
+import { useState, useCallback, useMemo, useEffect } from "react";
+import { GoogleMap, useJsApiLoader, OverlayView } from "@react-google-maps/api";
 import { mockUsers, statusConfig, User, mockMatches, Match } from "@/app/lib/mock-data";
 import { MagicToggle } from "@/app/components/ui/MagicToggle";
 import { UserCard } from "@/app/components/ui/UserCard";
 import { ChatOverlay } from "@/app/components/ui/ChatOverlay";
+import { LocationPermissionModal } from "@/app/components/ui/LocationPermissionModal";
+import { useLocation } from "@/app/hooks/useLocation";
+import { useNearbyUsers } from "@/app/hooks/useNearbyUsers";
 import { cn } from "@/app/lib/utils";
 import { Search, Map as MapIcon, Settings, MessageCircle, Clock, X } from "lucide-react";
 import Link from "next/link";
 
-// Google Map のスタイル定義 (ダークモード)
+// Google Map styles (dark mode)
 const mapStyles = [
   { elementType: "geometry", stylers: [{ color: "#0f172a" }] },
   { elementType: "labels.text.fill", stylers: [{ color: "#94a3b8" }] },
@@ -20,9 +23,9 @@ const mapStyles = [
   { featureType: "poi", elementType: "labels.text.fill", stylers: [{ color: "#94a3b8" }] },
   { featureType: "poi.park", elementType: "geometry", stylers: [{ color: "#111827" }] },
   { featureType: "road", elementType: "geometry", stylers: [{ color: "#1e293b" }] },
-  { featureType: "road", elementType: "geometry.stroke", stylers: [{ color: "#0f172a" }] },
   { featureType: "road.highway", elementType: "geometry", stylers: [{ color: "#334155" }] },
   { featureType: "water", elementType: "geometry", stylers: [{ color: "#020617" }] },
+  { featureType: "poi", elementType: "labels.icon", stylers: [{ visibility: "off" }] } // Hide default icons
 ];
 
 const containerStyle = {
@@ -30,7 +33,7 @@ const containerStyle = {
   height: '100%'
 };
 
-const center = {
+const defaultCenter = {
   lat: 35.6467,
   lng: 139.7101
 };
@@ -38,14 +41,33 @@ const center = {
 export default function MapPage() {
   const { isLoaded } = useJsApiLoader({
     id: 'google-map-script',
-    googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "" // APIキーがない場合は透かしが入ります
+    googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || ""
   });
+
+  const { location, permissionStatus } = useLocation();
+  const { nearbyUsers } = useNearbyUsers(location);
 
   const [currentStatus, setCurrentStatus] = useState<keyof typeof statusConfig>("Drink");
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [showOfferAnimation, setShowOfferAnimation] = useState<{show: boolean, type: string}>({show: false, type: ""});
   const [showMatchList, setShowMatchList] = useState(false);
   const [activeChat, setActiveChat] = useState<Match | null>(null);
+
+  // Merge mock users with real nearby users
+  const displayUsers = useMemo(() => {
+    const realUsers = nearbyUsers.map(u => ({
+        id: u.id,
+        name: u.full_name,
+        role: 'Employee' as const,
+        status: (u.status as any) || 'Drink',
+        tags: ['#Nearby'],
+        location: u.location,
+        isRecommended: false
+    }));
+    return [...mockUsers, ...realUsers];
+  }, [nearbyUsers]);
+
+  const mapCenter = location || defaultCenter;
 
   const handleOffer = (type: string) => {
     setShowOfferAnimation({show: true, type});
@@ -55,30 +77,85 @@ export default function MapPage() {
     }, 2000);
   };
 
+  const onPermissionGranted = useCallback(() => {
+    // Permission handled by hook
+  }, []);
+
+  const onPermissionDenied = useCallback(() => {
+    // Handle denial
+  }, []);
+
   return (
     <main className="relative w-full h-[100dvh] bg-slate-950 overflow-hidden select-none touch-none">
-      {/* Google Map 背景 */}
+      
+      <LocationPermissionModal 
+        onPermissionGranted={onPermissionGranted}
+        onPermissionDenied={onPermissionDenied}
+      />
+
+      {/* Google Map */}
       {isLoaded ? (
         <GoogleMap
           mapContainerStyle={containerStyle}
-          center={center}
+          center={mapCenter}
           zoom={17}
           options={{
             styles: mapStyles,
             disableDefaultUI: true,
-            gestureHandling: 'greedy'
+            gestureHandling: 'greedy',
+            minZoom: 15,
+            maxZoom: 20,
           }}
         >
-          {/* ユーザーピンをMarkerとして配置 */}
-          {currentStatus !== 'Ghost' && mockUsers.map((user) => (
-            <div key={user.id}>
-              {/* カスタムピンの代わりに OverlayView を使うのが理想的ですが、
-                  簡易化のため、ピンのレンダリングは既存の方式（絶対配置）を継続し、
-                  GoogleMap は背景として機能させます。
-                  ※本来は Google Maps の OverlayView を使って座標同期させます。
-              */}
-            </div>
+          {/* OverlayView ensures markers move with the map */}
+          {currentStatus !== 'Ghost' && displayUsers.map((user) => (
+            <OverlayView
+              key={user.id}
+              position={user.location}
+              mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+            >
+              <button
+                onClick={(e) => {
+                  e.stopPropagation(); // Prevent map click
+                  setSelectedUser(user);
+                }}
+                className="absolute -translate-x-1/2 -translate-y-1/2 transition-all duration-700 hover:scale-110 active:scale-90 group z-10 cursor-pointer"
+              >
+                {user.isRecommended && (
+                  <div className="absolute -inset-4 bg-primary/20 rounded-full animate-pulse blur-md pointer-events-none" />
+                )}
+                <div className={cn(
+                  "w-11 h-11 rounded-full flex items-center justify-center text-xl border-2 transition-all shadow-lg",
+                  statusConfig[user.status as keyof typeof statusConfig]?.color || 'bg-gray-500',
+                  user.isRecommended ? "neon-teal border-primary shadow-[0_0_10px_rgba(45,212,191,0.6)]" : "border-white/20",
+                  selectedUser?.id === user.id && "ring-4 ring-white scale-110"
+                )}>
+                  {statusConfig[user.status as keyof typeof statusConfig]?.icon || '?'}
+                </div>
+              </button>
+            </OverlayView>
           ))}
+
+          {/* Self Marker */}
+          {location && (
+             <OverlayView 
+               position={location} 
+               mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+             >
+                <div className="absolute -translate-x-1/2 -translate-y-1/2 z-20 pointer-events-none">
+                  <div className={cn(
+                    "w-14 h-14 rounded-full flex items-center justify-center text-3xl border-4 border-white shadow-[0_0_30px_rgba(255,255,255,0.3)]",
+                    statusConfig[currentStatus].color,
+                    currentStatus === 'Drink' && "neon-teal",
+                    currentStatus === 'Career' && "neon-pink",
+                    currentStatus === 'Work' && "neon-amber",
+                    currentStatus === 'Chat' && "shadow-[0_0_20px_rgba(59,130,246,0.5)]"
+                  )}>
+                    {statusConfig[currentStatus].icon}
+                  </div>
+                </div>
+             </OverlayView>
+          )}
         </GoogleMap>
       ) : (
         <div className="absolute inset-0 bg-slate-900 flex items-center justify-center">
@@ -86,59 +163,20 @@ export default function MapPage() {
         </div>
       )}
 
-      {/* 既存のピン表示ロジック (Google Map の上にオーバーレイ) */}
-      {/* 本来は Google Map の座標系と同期させる必要がありますが、
-          プロトタイプとして、恵比寿駅中心の固定座標系でオーバーレイします。 */}
-      <div className="absolute inset-0 pointer-events-none">
-        {currentStatus !== 'Ghost' && mockUsers.map((user) => (
-          <button
-            key={user.id}
-            onClick={() => setSelectedUser(user)}
-            className="absolute transition-all duration-700 hover:scale-110 active:scale-90 group z-10 pointer-events-auto"
-            style={{
-              top: `${50 + (35.6467 - user.location.lat) * 2500}%`,
-              left: `${50 + (user.location.lng - 139.7101) * 2500}%`,
-            }}
-          >
-            {user.isRecommended && (
-              <div className="absolute -inset-4 bg-primary/20 rounded-full animate-pulse blur-md" />
-            )}
-            <div className={cn(
-              "w-11 h-11 rounded-full flex items-center justify-center text-xl border-2 transition-all shadow-lg",
-              statusConfig[user.status].color,
-              user.isRecommended ? "neon-teal border-primary shadow-[0_0_10px_rgba(45,212,191,0.6)]" : "border-white/20",
-              selectedUser?.id === user.id && "ring-4 ring-white scale-110"
-            )}>
-              {statusConfig[user.status].icon}
-            </div>
-          </button>
-        ))}
-
-        {/* 自分自身のピン */}
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 pointer-events-none">
-          <div className={cn(
-            "w-14 h-14 rounded-full flex items-center justify-center text-3xl border-4 border-white shadow-[0_0_30px_rgba(255,255,255,0.3)]",
-            statusConfig[currentStatus].color,
-            currentStatus === 'Drink' && "neon-teal",
-            currentStatus === 'Career' && "neon-pink",
-            currentStatus === 'Work' && "neon-amber",
-            currentStatus === 'Chat' && "shadow-[0_0_20px_rgba(59,130,246,0.5)]"
-          )}>
-            {statusConfig[currentStatus].icon}
-          </div>
-        </div>
-      </div>
-
-      {/* ヘッダー */}
-      <div className="absolute top-0 inset-x-4 pt-10 flex justify-between items-center z-30">
-        <div className="bg-slate-900/80 backdrop-blur-md px-3 py-2 rounded-2xl flex items-center gap-2 border border-slate-700 shadow-xl">
+      {/* Header, UI Overlays - Note: These must be outside GoogleMap to be clickable if map captures events, 
+          but usually OK if z-index is high. GoogleMap traps some events. */}
+      
+      {/* Header */}
+      <div className="absolute top-0 inset-x-4 pt-10 flex justify-between items-center z-30 pointer-events-none">
+        <div className="bg-slate-900/80 backdrop-blur-md px-3 py-2 rounded-2xl flex items-center gap-2 border border-slate-700 shadow-xl pointer-events-auto">
           <div className="w-8 h-8 bg-primary/20 rounded-xl flex items-center justify-center">
             <Search className="text-primary" size={16} />
           </div>
-          <span className="text-[11px] text-slate-300 font-bold pr-2 uppercase">Ebisu Area</span>
+          <span className="text-[11px] text-slate-300 font-bold pr-2 uppercase">
+             {location ? "Current Location" : "Ebisu Area"}
+          </span>
         </div>
-        <div className="flex gap-2">
-          {/* マッチ・チャット一覧ボタン */}
+        <div className="flex gap-2 pointer-events-auto">
           <button 
             onClick={() => setShowMatchList(true)}
             className="w-10 h-10 bg-slate-900/80 backdrop-blur-md rounded-xl flex items-center justify-center border border-slate-700 text-slate-400 relative"
@@ -154,7 +192,7 @@ export default function MapPage() {
         </div>
       </div>
 
-      {/* マッチ一覧オーバーレイ */}
+      {/* Match List Overlay */}
       {showMatchList && (
         <div className="fixed inset-0 bg-slate-950/95 z-50 animate-in slide-in-from-right duration-300 flex flex-col">
           <header className="p-6 pt-12 border-b border-slate-800 flex justify-between items-center">
@@ -196,7 +234,7 @@ export default function MapPage() {
         </div>
       )}
 
-      {/* チャット画面 */}
+      {/* Chat Screen */}
       {activeChat && (
         <ChatOverlay 
           match={activeChat} 
@@ -204,7 +242,7 @@ export default function MapPage() {
         />
       )}
 
-      {/* ユーザー詳細カード */}
+      {/* User Details */}
       {selectedUser && (
         <UserCard 
           user={selectedUser} 
@@ -213,13 +251,17 @@ export default function MapPage() {
         />
       )}
 
-      {/* マジック・トグル */}
-      <MagicToggle 
-        currentStatus={currentStatus} 
-        onStatusChange={setCurrentStatus} 
-      />
+      {/* Magic Toggle - Fixed to bottom */}
+      <div className="absolute bottom-8 inset-x-0 flex justify-center z-40 pointer-events-none">
+        <div className="pointer-events-auto">
+          <MagicToggle 
+            currentStatus={currentStatus} 
+            onStatusChange={setCurrentStatus} 
+          />
+        </div>
+      </div>
 
-      {/* オファー送信アニメーション */}
+      {/* Offer Animation */}
       {showOfferAnimation.show && (
         <div className="absolute inset-0 z-[100] flex items-center justify-center bg-slate-950/90 backdrop-blur-md animate-in fade-in duration-300">
           <div className="text-center animate-in zoom-in duration-500">
